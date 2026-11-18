@@ -34,8 +34,9 @@
    - **Start Command**: `npm start`
    - **Instance Type**: `Free`
 5. **Environment Variables** (පහත variables 2ක ඇතුළත් කරන්න):
-   - `PHP_BACKEND_URL`: `https://smartzonelk.com.lk`
-   - `BRIDGE_SECRET`: `smartzone_baileys_secret_2026`
+   - `PHP_BACKEND_URL`: `https://cleora.lk`
+   - `CLEORA_BACKEND_URL`: `https://cleora.lk`
+   - `BRIDGE_SECRET`: `cleora_baileys_secret_2026`
 6. **"Create Web Service"** click කරන්න.
 
 ---

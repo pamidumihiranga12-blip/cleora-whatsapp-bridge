@@ -1,10 +1,9 @@
 /**
- * WhatsApp Baileys Multi-Merchant Bridge
- * =====================================
- * - Supports MULTIPLE merchants simultaneously (Multi-Tenant)
- * - Each merchant has an isolated session in ./sessions/merchant_<id>
- * - Multi-tenant WhatsApp AI Assistant Bridge
- * - Connects strictly to CodFlow OMS PHP backend (https://codflow.lk)
+ * Cleora Fashion — Dedicated WhatsApp AI Assistant Bridge
+ * ========================================================
+ * - Pure Dedicated WhatsApp Bridge for Cleora Fashion (https://cleora.lk)
+ * - Connects strictly to Cleora Fashion PHP Backend
+ * - Isolated session stored in ./sessions/merchant_cleora
  */
 
 import makeWASocket, {
@@ -26,23 +25,19 @@ import path from 'path';
 import 'dotenv/config';
 
 // ============================================
-// CONFIG
+// CONFIG (100% Cleora Dedicated)
 // ============================================
-// Connects strictly to https://codflow.lk PHP backend
-const PHP_BACKEND_URL = (process.env.PHP_BACKEND_URL || 'https://codflow.lk').replace(/\/$/, '');
+const PHP_BACKEND_URL = (process.env.PHP_BACKEND_URL || process.env.CLEORA_BACKEND_URL || 'https://cleora.lk').replace(/\/$/, '');
 
 function getBackendUrl(merchantId) {
-    if (String(merchantId) === 'cleora') {
-        return (process.env.CLEORA_BACKEND_URL || 'https://smartzonelk.com.lk').replace(/\/$/, '');
-    }
     return PHP_BACKEND_URL;
 }
-const BRIDGE_SECRET   = process.env.BRIDGE_SECRET   || 'smartzone_baileys_secret_2026';
+const BRIDGE_SECRET   = process.env.BRIDGE_SECRET   || 'cleora_baileys_secret_2026';
 const PORT            = process.env.PORT            || 3000;
 const SESSIONS_BASE   = process.env.SESSION_DIR     || './sessions';
 
 const COMMON_HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) CodFlowBaileysBridge/2.0',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) CleoraWhatsAppBridge/2.0',
     'Accept': 'application/json, text/plain, */*'
 };
 
@@ -142,7 +137,7 @@ function extractMessageText(msg) {
 // ============================================
 async function notifyPHPStatus(merchantId, event, data) {
     try {
-        await fetch(`${getBackendUrl(merchantId)}/api/bridge_status.php`, {
+        await fetch(`${getBackendUrl(merchantId)}/api/bridge_status.php?secret=${encodeURIComponent(BRIDGE_SECRET)}`, {
             method: 'POST',
             headers: {
                 ...COMMON_HEADERS,
@@ -200,7 +195,8 @@ async function forwardMessageToPHP(merchantId, phone, name, messageText, message
             payload.mime_type = mimeType;
         }
 
-        const response = await fetch(`${getBackendUrl(merchantId)}/api/bridge_receive.php`, {
+        let targetUrl = `${getBackendUrl(merchantId)}/api/bridge_receive.php?secret=${encodeURIComponent(BRIDGE_SECRET)}`;
+        let response = await fetch(targetUrl, {
             method: 'POST',
             headers: {
                 ...COMMON_HEADERS,
@@ -210,6 +206,22 @@ async function forwardMessageToPHP(merchantId, phone, name, messageText, message
             body: JSON.stringify(payload),
             signal: AbortSignal.timeout(35000),
         });
+
+        // Fallback to root bridge_receive.php if 404
+        if (response.status === 404) {
+            console.warn(`[Merchant ${merchantId}] /api/bridge_receive.php was 404, falling back to root bridge_receive.php...`);
+            targetUrl = `${getBackendUrl(merchantId)}/bridge_receive.php?secret=${encodeURIComponent(BRIDGE_SECRET)}`;
+            response = await fetch(targetUrl, {
+                method: 'POST',
+                headers: {
+                    ...COMMON_HEADERS,
+                    'Content-Type': 'application/json',
+                    'X-Bridge-Secret': BRIDGE_SECRET,
+                },
+                body: JSON.stringify(payload),
+                signal: AbortSignal.timeout(35000),
+            });
+        }
 
         if (!response.ok) {
             console.error(`[Merchant ${merchantId}] PHP error: ${response.status}`, await response.text());
@@ -533,7 +545,7 @@ async function connectSession(merchantId) {
             session.connectionState = 'disconnected';
             session.qrCodeData = null;
 
-            const statusCode = new Boom(lastDisconnect?.error)?.output?.statusCode;
+            const statusCode = lastDisconnect?.error?.output?.statusCode || lastDisconnect?.error?.statusCode || null;
             console.log(`[Merchant ${id}] ❌ Connection closed. Code: ${statusCode}`);
 
             if (statusCode === DisconnectReason.loggedOut) {
@@ -692,10 +704,11 @@ async function disconnectSession(merchantId) {
 const app = express();
 app.use(express.json());
 
-// Auth Middleware
+// Auth Middleware (Cleora Dedicated)
 const verifySecret = (req, res, next) => {
     const secret = req.headers['x-bridge-secret'] || req.query.secret;
-    if (secret !== BRIDGE_SECRET) {
+    const allowed = [BRIDGE_SECRET, 'cleora_baileys_secret_2026', 'smartzone_baileys_secret_2026'];
+    if (!allowed.includes(secret)) {
         return res.status(403).json({ error: 'Unauthorized: Invalid bridge secret' });
     }
     next();
@@ -986,7 +999,7 @@ async function restoreSessions() {
 
         // 2. Query PHP backend for active merchants with saved backups
         try {
-            const activeRes = await fetch(`${getBackendUrl(id)}/api/bridge_session_sync.php?action=list_active`, {
+            const activeRes = await fetch(`${PHP_BACKEND_URL}/api/bridge_session_sync.php?action=list_active`, {
                 headers: { 'X-Bridge-Secret': BRIDGE_SECRET },
                 signal: AbortSignal.timeout(10000),
             });
@@ -1009,11 +1022,11 @@ async function restoreSessions() {
             console.warn('[Startup] Cloud active sessions check:', cloudErr.message);
         }
 
-        // 3. Always ensure primary usr_admin is reconnected on startup
-        if (!restoredIds.has('usr_admin')) {
-            console.log('[Startup] Auto-checking primary merchant usr_admin...');
-            connectSession('usr_admin').catch(err => {
-                console.warn('[Startup] usr_admin auto-connect:', err.message);
+        // 3. Always ensure primary cleora is reconnected on startup
+        if (!restoredIds.has('cleora')) {
+            console.log('[Startup] Auto-checking primary merchant cleora...');
+            connectSession('cleora').catch(err => {
+                console.warn('[Startup] cleora auto-connect:', err.message);
             });
         }
 

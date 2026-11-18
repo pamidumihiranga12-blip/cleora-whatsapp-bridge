@@ -10,6 +10,8 @@ services:
       - key: NODE_VERSION
         value: 18.18.0
       - key: PHP_BACKEND_URL
-        value: https://smartzonelk.com.lk
+        value: https://cleora.lk
       - key: BRIDGE_SECRET
-        value: smartzone_baileys_secret_2026
+        value: cleora_baileys_secret_2026
+      - key: CLEORA_BACKEND_URL
+        value: https://cleora.lk
