@@ -8,6 +8,7 @@
 
 import makeWASocket, {
     useMultiFileAuthState,
+    makeCacheableSignalKeyStore,
     DisconnectReason,
     fetchLatestBaileysVersion,
     Browsers,
@@ -506,15 +507,33 @@ async function connectSession(merchantId) {
     const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
     const { version }          = await fetchLatestBaileysVersion();
 
+    // Signal retry counter cache to avoid decryption loops
+    const msgRetryCounterCache = {
+        _cache: new Map(),
+        get(key) { return this._cache.get(key); },
+        set(key, val) { this._cache.set(key, val); },
+        del(key) { this._cache.delete(key); }
+    };
+
     const sock = makeWASocket({
         version,
         logger,
-        auth: state,
+        auth: {
+            creds: state.creds,
+            keys: makeCacheableSignalKeyStore(state.keys, logger),
+        },
+        msgRetryCounterCache,
+        getMessage: async (key) => {
+            return {
+                conversation: 'Cleora Fashion'
+            };
+        },
+        shouldIgnoreJid: (jid) => jid === 'status@broadcast' || jid.endsWith('@g.us'),
         browser: Browsers.ubuntu('Chrome'),
         printQRInTerminal: false,
         syncFullHistory: false,
         generateHighQualityLinkPreview: false,
-        retryRequestDelayMs: 2500,
+        retryRequestDelayMs: 2000,
         maxMsgRetryCount: 5,
         markOnlineOnConnect: false,
         connectTimeoutMs: 60000,
@@ -707,7 +726,7 @@ app.use(express.json());
 // Auth Middleware (Cleora Dedicated)
 const verifySecret = (req, res, next) => {
     const secret = req.headers['x-bridge-secret'] || req.query.secret;
-    const allowed = [BRIDGE_SECRET, 'cleora_baileys_secret_2026', 'smartzone_baileys_secret_2026'];
+    const allowed = [BRIDGE_SECRET, 'cleora_baileys_secret_2026'];
     if (!allowed.includes(secret)) {
         return res.status(403).json({ error: 'Unauthorized: Invalid bridge secret' });
     }
@@ -908,6 +927,16 @@ app.post('/session/:merchantId/disconnect', verifySecret, async (req, res) => {
 });
 
 /**
+ * POST /session/:merchantId/reset
+ * Fully wipe local session & cloud backup to cleanly recover from any corrupted Signal keys
+ */
+app.post('/session/:merchantId/reset', verifySecret, async (req, res) => {
+    const { merchantId } = req.params;
+    await disconnectSession(merchantId);
+    res.json({ success: true, merchant_id: merchantId, state: 'disconnected', message: 'Session wiped cleanly' });
+});
+
+/**
  * POST /session/:merchantId/send
  * Send a message via a specific merchant's WhatsApp
  * Body: { phone: "94786800086", message: "Hello!" }
@@ -1046,10 +1075,27 @@ app.listen(PORT, async () => {
     // Keepalive self-ping every 8 minutes to prevent Render free-tier containers from spinning down
     setInterval(async () => {
         try {
-            const selfUrl = process.env.RENDER_EXTERNAL_URL ? `${process.env.RENDER_EXTERNAL_URL}/health` : 'https://wa-bridge-293f.onrender.com/health';
+            const selfUrl = process.env.RENDER_EXTERNAL_URL ? `${process.env.RENDER_EXTERNAL_URL}/health` : 'https://cleora-whatsapp-bridge.onrender.com/health';
             await fetch(selfUrl, { signal: AbortSignal.timeout(5000) });
             // Also keep alive PHP backend
             await fetch(`${PHP_BACKEND_URL}/api/cron_keepalive.php`, { signal: AbortSignal.timeout(8000) });
         } catch (e) {}
     }, 8 * 60 * 1000);
+});
+
+// Suppress unhandled libsignal background companion history decryption noise
+process.on('unhandledRejection', (reason) => {
+    const msg = String(reason?.message || reason || '');
+    if (msg.includes('Bad MAC') || msg.includes('decrypt message') || msg.includes('Session error')) {
+        return;
+    }
+    console.warn('Unhandled rejection:', msg);
+});
+
+process.on('uncaughtException', (err) => {
+    const msg = String(err?.message || err || '');
+    if (msg.includes('Bad MAC') || msg.includes('decrypt message') || msg.includes('Session error')) {
+        return;
+    }
+    console.error('Uncaught exception:', err);
 });

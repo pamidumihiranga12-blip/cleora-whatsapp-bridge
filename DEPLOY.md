@@ -53,4 +53,4 @@
 ---
 
 💡 **සටහන:**
-ඔබ දැනටමත් CodFlow සඳහා Render Bridge එකක් භාවිතා කරන්නේ නම් (`https://wa-bridge-293f.onrender.com`), එයටද Cleora ස්වයංක්‍රීයව සහාය දක්වන බැවින් අලුතින් Render එකක් deploy නොකර වුවද පරීක්ෂා කරගත හැක!
+Cleora Fashion සඳහාම වෙන්වූ Dedicated WhatsApp Baileys Bridge එකක් මෙහි අන්තර්ගත වේ.
