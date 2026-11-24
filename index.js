@@ -8,7 +8,6 @@
 
 import makeWASocket, {
     useMultiFileAuthState,
-    makeCacheableSignalKeyStore,
     DisconnectReason,
     fetchLatestBaileysVersion,
     Browsers,
@@ -521,33 +520,15 @@ async function connectSession(merchantId) {
     const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
     const { version }          = await fetchLatestBaileysVersion();
 
-    // Signal retry counter cache to avoid decryption loops
-    const msgRetryCounterCache = {
-        _cache: new Map(),
-        get(key) { return this._cache.get(key); },
-        set(key, val) { this._cache.set(key, val); },
-        del(key) { this._cache.delete(key); }
-    };
-
     const sock = makeWASocket({
         version,
         logger,
-        auth: {
-            creds: state.creds,
-            keys: makeCacheableSignalKeyStore(state.keys, logger),
-        },
-        msgRetryCounterCache,
-        getMessage: async (key) => {
-            return {
-                conversation: 'Cleora Fashion'
-            };
-        },
-        shouldIgnoreJid: (jid) => jid === 'status@broadcast' || jid.endsWith('@g.us'),
+        auth: state,
         browser: Browsers.ubuntu('Chrome'),
         printQRInTerminal: false,
         syncFullHistory: false,
         generateHighQualityLinkPreview: false,
-        retryRequestDelayMs: 2000,
+        retryRequestDelayMs: 2500,
         maxMsgRetryCount: 5,
         markOnlineOnConnect: false,
         connectTimeoutMs: 60000,
@@ -580,6 +561,7 @@ async function connectSession(merchantId) {
 
             const statusCode = lastDisconnect?.error?.output?.statusCode || lastDisconnect?.error?.statusCode || null;
             console.log(`[Merchant ${id}] ❌ Connection closed. Code: ${statusCode}`);
+            addDebugLog(`[Merchant ${id}] ❌ Connection closed. Code: ${statusCode}`);
 
             if (statusCode === DisconnectReason.loggedOut) {
                 console.log(`[Merchant ${id}] 🚪 Logged out event from WhatsApp. Clearing local directory.`);
