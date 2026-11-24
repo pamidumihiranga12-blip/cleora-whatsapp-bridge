@@ -195,6 +195,7 @@ function isContactSaved(session, senderJid, senderPhone) {
 
 async function forwardMessageToPHP(merchantId, phone, name, messageText, messageId, sock, remoteJid, imageBase64 = null, mimeType = 'image/jpeg', isSavedContact = false) {
     try {
+        addDebugLog(`[Merchant ${merchantId}] 🌐 Forwarding "${messageText}" to PHP...`);
         const payload = {
             merchant_id: String(merchantId),
             phone,
@@ -210,6 +211,7 @@ async function forwardMessageToPHP(merchantId, phone, name, messageText, message
         }
 
         let targetUrl = `${getBackendUrl(merchantId)}/api/bridge_receive.php?secret=${encodeURIComponent(BRIDGE_SECRET)}`;
+        addDebugLog(`[Merchant ${merchantId}] 🎯 Fetching: ${targetUrl}`);
         let response = await fetch(targetUrl, {
             method: 'POST',
             headers: {
@@ -238,15 +240,19 @@ async function forwardMessageToPHP(merchantId, phone, name, messageText, message
         }
 
         if (!response.ok) {
-            console.error(`[Merchant ${merchantId}] PHP error: ${response.status}`, await response.text());
+            const errTxt = await response.text();
+            addDebugLog(`[Merchant ${merchantId}] ❌ PHP error ${response.status}: ${errTxt.substring(0, 100)}`);
+            console.error(`[Merchant ${merchantId}] PHP error: ${response.status}`, errTxt);
             return;
         }
 
         const result = await response.json();
+        addDebugLog(`[Merchant ${merchantId}] 🤖 AI reply received (reply=${Boolean(result?.reply)}, img=${Boolean(result?.image_url)})`);
 
         // If PHP returns a reply or image_url, send it out immediately via WhatsApp
         if (result && (result.reply || result.image_url) && sock) {
             const targetJid = remoteJid || formatJID(phone);
+            addDebugLog(`[Merchant ${merchantId}] 📤 Sending WhatsApp reply to ${targetJid}...`);
 
             // Fast natural typing indicator
             try {
@@ -265,8 +271,10 @@ async function forwardMessageToPHP(merchantId, phone, name, messageText, message
                         caption: result.reply || ''
                     });
                     sentImage = true;
+                    addDebugLog(`[Merchant ${merchantId}] 📸 Sent image reply to ${targetJid}`);
                     console.log(`[Merchant ${merchantId}] 📸 Sent image reply to ${targetJid}: ${result.image_url}`);
                 } catch (sendImgErr) {
+                    addDebugLog(`[Merchant ${merchantId}] ⚠️ Image send failed: ${sendImgErr.message}`);
                     console.warn(`[Merchant ${merchantId}] Image send failed (${sendImgErr.message}). Falling back to text...`);
                     if (targetJid && targetJid.includes('@lid') && phone) {
                         try {
@@ -276,7 +284,7 @@ async function forwardMessageToPHP(merchantId, phone, name, messageText, message
                                 caption: result.reply || ''
                             });
                             sentImage = true;
-                            console.log(`[Merchant ${merchantId}] 📸 Image fallback sent to ${fallbackJid}`);
+                            addDebugLog(`[Merchant ${merchantId}] 📸 Fallback image sent to ${fallbackJid}`);
                         } catch (e2) {}
                     }
                 }
@@ -286,15 +294,19 @@ async function forwardMessageToPHP(merchantId, phone, name, messageText, message
             if (!sentImage && result.reply) {
                 try {
                     await sock.sendMessage(targetJid, { text: result.reply });
+                    addDebugLog(`[Merchant ${merchantId}] ✅ Reply sent successfully to ${targetJid}!`);
                     console.log(`[Merchant ${merchantId}] 📤 Sent text reply to ${targetJid}: ${result.reply.substring(0, 40)}...`);
                 } catch (sendErr) {
+                    addDebugLog(`[Merchant ${merchantId}] ⚠️ Text send failed: ${sendErr.message}`);
                     console.warn(`[Merchant ${merchantId}] Failed to send to ${targetJid}, trying fallback:`, sendErr.message);
                     if (targetJid && targetJid.includes('@lid') && phone) {
                         try {
                             const fallbackJid = formatJID(phone);
                             await sock.sendMessage(fallbackJid, { text: result.reply });
+                            addDebugLog(`[Merchant ${merchantId}] ✅ Fallback reply sent to ${fallbackJid}!`);
                             console.log(`[Merchant ${merchantId}] 📤 Fallback sent to ${fallbackJid}`);
                         } catch (e3) {
+                            addDebugLog(`[Merchant ${merchantId}] ❌ All send attempts failed: ${e3.message}`);
                             console.error(`[Merchant ${merchantId}] All fallback text sends failed:`, e3.message);
                         }
                     }
@@ -303,6 +315,7 @@ async function forwardMessageToPHP(merchantId, phone, name, messageText, message
         }
 
     } catch (err) {
+        addDebugLog(`[Merchant ${merchantId}] ❌ Error forwarding to PHP: ${err.message}`);
         console.error(`[Merchant ${merchantId}] Error forwarding to PHP:`, err.message);
     }
 }
@@ -764,6 +777,38 @@ app.get('/', (req, res) => {
             phone: s.phone,
         })),
     });
+});
+
+app.get('/test-php', async (req, res) => {
+    try {
+        const targetUrl = `${getBackendUrl('cleora')}/api/bridge_receive.php?secret=${encodeURIComponent(BRIDGE_SECRET)}`;
+        const testRes = await fetch(targetUrl, {
+            method: 'POST',
+            headers: {
+                ...COMMON_HEADERS,
+                'Content-Type': 'application/json',
+                'X-Bridge-Secret': BRIDGE_SECRET,
+            },
+            body: JSON.stringify({
+                merchant_id: 'cleora',
+                phone: '94771234567',
+                name: 'Render Probe',
+                message: 'Hello Render Test',
+                message_id: 'TEST_RENDER_PROBE',
+                timestamp: Date.now()
+            }),
+            signal: AbortSignal.timeout(10000)
+        });
+        const text = await testRes.text();
+        res.json({
+            ok: testRes.ok,
+            status: testRes.status,
+            targetUrl,
+            body: text.substring(0, 300)
+        });
+    } catch (e) {
+        res.json({ error: e.message, targetUrl: getBackendUrl('cleora') });
+    }
 });
 
 app.get('/health', (req, res) => {
