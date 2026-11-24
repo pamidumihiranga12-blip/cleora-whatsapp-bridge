@@ -38,11 +38,20 @@ const PORT            = process.env.PORT            || 3000;
 const SESSIONS_BASE   = process.env.SESSION_DIR     || './sessions';
 
 const COMMON_HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) CleoraWhatsAppBridge/2.0',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
     'Accept': 'application/json, text/plain, */*'
 };
 
 const logger = pino({ level: 'silent' });
+
+// In-memory circular debug logs (last 150 events)
+const debugLogs = [];
+function addDebugLog(msg) {
+    const entry = `[${new Date().toISOString()}] ${msg}`;
+    debugLogs.push(entry);
+    if (debugLogs.length > 150) debugLogs.shift();
+    console.log(entry);
+}
 
 // ============================================
 // IN-MEMORY SESSIONS REGISTRY
@@ -114,21 +123,26 @@ async function resolveSenderInfo(sock, msg) {
 }
 
 function extractMessageText(msg) {
-    const m = msg.message;
+    let m = msg.message;
     if (!m) return null;
 
-    // Ephemeral / View Once unwrapping
-    const unwrapped = m.ephemeralMessage?.message || m.viewOnceMessage?.message || m.viewOnceMessageV2?.message || m;
+    // Ephemeral / View Once / Edited unwrapping
+    if (m.ephemeralMessage?.message) m = m.ephemeralMessage.message;
+    if (m.viewOnceMessage?.message) m = m.viewOnceMessage.message;
+    if (m.viewOnceMessageV2?.message) m = m.viewOnceMessageV2.message;
+    if (m.viewOnceMessageV2Extension?.message) m = m.viewOnceMessageV2Extension.message;
+    if (m.documentWithCaptionMessage?.message) m = m.documentWithCaptionMessage.message;
+    if (m.editedMessage?.message?.protocolMessage?.editedMessage) m = m.editedMessage.message.protocolMessage.editedMessage;
 
     return (
-        unwrapped.conversation ||
-        unwrapped.extendedTextMessage?.text ||
-        unwrapped.imageMessage?.caption ||
-        unwrapped.videoMessage?.caption ||
-        unwrapped.documentMessage?.caption ||
-        unwrapped.buttonsResponseMessage?.selectedButtonId ||
-        unwrapped.templateButtonReplyMessage?.selectedId ||
-        unwrapped.interactiveResponseMessage?.body?.text ||
+        m.conversation ||
+        m.extendedTextMessage?.text ||
+        m.imageMessage?.caption ||
+        m.videoMessage?.caption ||
+        m.documentMessage?.caption ||
+        m.buttonsResponseMessage?.selectedButtonId ||
+        m.templateButtonReplyMessage?.selectedId ||
+        m.interactiveResponseMessage?.body?.text ||
         null
     );
 }
@@ -593,7 +607,13 @@ async function connectSession(merchantId) {
             session.connectionState = 'connected';
             session.qrCodeData = null;
             session.phone = sock.user?.id ? sock.user.id.split(':')[0] : null;
-            console.log(`[Merchant ${id}] ✅ WhatsApp Connected! Number: +${session.phone}`);
+            addDebugLog(`[Merchant ${id}] ✅ WhatsApp Connected! Number: +${session.phone}`);
+
+            // Ensure creds are marked registered if authenticated
+            if (sock.authState?.creds && !sock.authState.creds.registered) {
+                sock.authState.creds.registered = true;
+                try { await saveCreds(); } catch (e) {}
+            }
 
             await notifyPHPStatus(id, 'connected', {
                 phone: session.phone,
@@ -638,11 +658,17 @@ async function connectSession(merchantId) {
     // Event: Incoming Messages
     // ==========================================
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
-        // Allow live 'notify' messages, and recent 'append' messages (< 15 mins old) from reconnect / waking up
         for (const msg of messages) {
-            if (msg.key.fromMe) continue;
-            if (msg.key.remoteJid === 'status@broadcast') continue;
-            if (msg.key.remoteJid?.endsWith('@g.us')) continue;
+            const senderJid = msg.key?.remoteJid || 'unknown';
+            if (msg.key.fromMe) {
+                // Outbound message from own phone, ignore
+                continue;
+            }
+            if (senderJid === 'status@broadcast' || senderJid.endsWith('@g.us')) {
+                continue;
+            }
+
+            addDebugLog(`[Merchant ${id}] 📩 Incoming message event from ${senderJid} (type: ${type})`);
 
             // If message was received via 'append' (offline sync upon reconnecting), ignore only if older than 15 mins
             if (type === 'append') {
@@ -650,8 +676,14 @@ async function connectSession(merchantId) {
                 const msgSec = Number(msg.messageTimestamp || 0);
                 const ageSec = nowSec - msgSec;
                 if (msgSec > 0 && ageSec > 900) {
+                    addDebugLog(`[Merchant ${id}] Skipped old append message (age: ${ageSec}s)`);
                     continue; // Skip ancient history messages
                 }
+            }
+
+            if (!msg.message) {
+                addDebugLog(`[Merchant ${id}] ⚠️ Received message without payload from ${senderJid} (stubType: ${msg.messageStubType || 'none'})`);
+                continue;
             }
 
             let imageBase64 = null;
@@ -662,17 +694,20 @@ async function connectSession(merchantId) {
                     imageBase64 = buffer.toString('base64');
                     mimeType = msg.message.imageMessage.mimetype || 'image/jpeg';
                 } catch (imgErr) {
-                    console.warn(`[Merchant ${id}] Failed to download media image:`, imgErr.message);
+                    addDebugLog(`[Merchant ${id}] Failed to download media image: ${imgErr.message}`);
                 }
             }
 
             const messageText = extractMessageText(msg) || (imageBase64 ? 'Customer sent an image. Please inspect it.' : null);
-            if (!messageText && !imageBase64) continue;
+            if (!messageText && !imageBase64) {
+                addDebugLog(`[Merchant ${id}] ⚠️ extractMessageText was null for keys: ${Object.keys(msg.message).join(', ')}`);
+                continue;
+            }
 
             const { senderPhone, senderName, senderJID } = await resolveSenderInfo(sock, msg);
 
             const isSaved = isContactSaved(session, senderJID, senderPhone);
-            console.log(`[Merchant ${id}] 📩 Incoming from ${senderName} (${senderPhone}) [Saved: ${isSaved ? 'YES' : 'NO'}]: "${messageText}" ${imageBase64 ? '[IMAGE ATTACHED]' : ''}`);
+            addDebugLog(`[Merchant ${id}] 💬 Processing from ${senderName} (${senderPhone}) [Saved: ${isSaved ? 'YES' : 'NO'}]: "${messageText}"`);
 
             await forwardMessageToPHP(id, senderPhone, senderName, messageText, msg.key.id, sock, senderJID, imageBase64, mimeType, isSaved);
         }
@@ -686,24 +721,25 @@ async function connectSession(merchantId) {
 // ============================================
 async function disconnectSession(merchantId) {
     const id = String(merchantId);
-    if (!sessions.has(id)) return true;
+    if (sessions.has(id)) {
+        const session = sessions.get(id);
+        clearTimeout(session.reconnectTimer);
 
-    const session = sessions.get(id);
-    clearTimeout(session.reconnectTimer);
-
-    try {
-        if (session.sock) {
-            session.sock.ev.removeAllListeners();
-            await session.sock.logout();
+        try {
+            if (session.sock) {
+                session.sock.ev.removeAllListeners();
+                await session.sock.logout();
+            }
+        } catch (e) {
+            // ignore
         }
-    } catch (e) {
-        // ignore
-    }
 
-    session.connectionState = 'disconnected';
-    session.qrCodeData = null;
-    session.phone = null;
-    session.sock = null;
+        session.connectionState = 'disconnected';
+        session.qrCodeData = null;
+        session.phone = null;
+        session.sock = null;
+        sessions.delete(id);
+    }
 
     const sessionDir = path.join(SESSIONS_BASE, `merchant_${id}`);
     try {
@@ -713,7 +749,7 @@ async function disconnectSession(merchantId) {
     // Explicit user logout: clear cloud backup in MySQL
     await deleteSessionFromCloud(id);
     await notifyPHPStatus(id, 'disconnected', { reason: 'user_logout' });
-    sessions.delete(id);
+    addDebugLog(`[Merchant ${id}] Session cleanly disconnected and wiped.`);
     return true;
 }
 
@@ -750,6 +786,15 @@ app.get('/', (req, res) => {
 
 app.get('/health', (req, res) => {
     res.status(200).send('OK');
+});
+
+app.get('/session/:merchantId/debug-logs', verifySecret, (req, res) => {
+    const { merchantId } = req.params;
+    res.json({
+        success: true,
+        merchant_id: merchantId,
+        logs: debugLogs
+    });
 });
 
 /**
